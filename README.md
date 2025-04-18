@@ -13,11 +13,11 @@ It can go louder than the builtin boost.
 
 ## How to build
 
-Since Maximilian currently has some minor issues to use with logue SDK, use the patched fork of Maximilian, which I am providing at:
+Since Maximilian currently has some minor issues to use with logue SDK, use the patched fork of Maximilian, which boochow provides at:
 
 https://github.com/boochow/Maximilian
 
-Place these repositories under logue-sdk/platforms/drumlogue/ like this:
+Place these repositories under `logue-sdk/platforms/drumlogue/` like this:
 
 ```text
 drumlogue/
