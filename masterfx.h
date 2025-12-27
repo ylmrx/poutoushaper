@@ -1,42 +1,67 @@
 #pragma once
-/*
- *  File: master.h
- *
- *  Dummy Master Effect Class
- *
- *  Author: Etienne Noreau-Hebert <etienne@korg.co.jp>
- *
- *  2021 (c) Korg
- *
- */
-
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <math.h>
 
 #include <arm_neon.h>
 
 #include "unit.h"  // Note: Include common definitions for all units
 
-#include "maximilian.h"
-// #include "libs/maxiPolyBLEP.h"
-
 enum Params {
   Shape = 0,
   Gain,
-  Taste
+  Clip
+};
+
+class Saturator {
+  public:
+    float32x4_t squared(float32x4_t x) {
+      return vmulq_f32(x, x);
+    }
+
+    float32x4_t cubed(float32x4_t x) {
+      return vmulq_f32(squared(x), x);
+    }
+
+    float32x4_t vdiv(float32x4_t x, float32x4_t y) {
+      float32x4_t rec = vrecpeq_f32(y);
+      return vmulq_f32(x, rec);
+    }
+
+    float32x4_t vectorHardClip(float32x4_t input) {
+      const float32x4_t min_val = vdupq_n_f32(-1.0f);
+      const float32x4_t max_val = vdupq_n_f32(1.0f);
+      return vmaxq_f32(vminq_f32(input, max_val), min_val);
+    }
+
+    float32x4_t vectorSoftClip(float32x4_t input) {
+      // reimplementation of maximilian formula, but unclipped
+      return vmulq_f32(
+          vsubq_f32(input, vmulq_f32(cubed(input), vdupq_n_f32(0.33333f))),
+          vdupq_n_f32(0.66667f)
+        );
+    }
+
+    float32x4_t vectorFastAtan(float32x4_t input) {
+      return vdiv(input, vaddq_f32(
+        vdupq_n_f32(1.0f),
+        vmulq_f32(vdupq_n_f32(0.28f), squared(input))));
+    }
+
+    float32x4_t vectorPSoftClip(float32x4_t input) {
+      float32x4_t abs_in = vabsq_f32(input);
+      return vmulq_f32(input,
+        vsubq_f32(
+          vdupq_n_f32(1.0f),
+          vmulq_f32(abs_in, vdupq_n_f32(0.5f))
+        )
+      );
+    }
 };
 
 class MasterFX {
  public:
-  /*===========================================================================*/
-  /* Public Data Structures/Types. */
-  /*===========================================================================*/
-
-  /*===========================================================================*/
-  /* Lifecycle Methods. */
-  /*===========================================================================*/
-
   MasterFX(void) {}
   virtual ~MasterFX(void) {}
 
@@ -75,33 +100,46 @@ class MasterFX {
     // selected and thus the render callback will not be called
   }
 
-  /*===========================================================================*/
-  /* Other Public Methods. */
-  /*===========================================================================*/
-  
   fast_inline void Process(const float * in, float * out, size_t frames) {
     const float * __restrict in_p = in;
     float * __restrict out_p = out;
     const float * out_e = out_p + (frames << 1);  // assuming stereo output
 
-    // comp_.setAttackHigh(10.f);
-    // comp_.setReleaseHigh(40.f);
-    float mul = maxiConvert::dbsToAmp(gain_);
+    float32x4_t mul_vec = vdupq_n_f32(powf(10.0f, gain_ * 0.05f));
+
     for (; out_p != out_e; in_p += 4, out_p += 2) {
-      // Note: should take advantage of NEON ArmV7 instructions
-      // float32x4_t sig = vld1q_f32(in_p);
-      // vst1_f32(out_p, vget_low_f32(sig));
-      // float in = (in_p[0] + in_p[1]) / 2.f;
-      for (int c = 0; c < 2; c++) {
-        float driven = in_p[c] *  mul;
-        if (shape_ == 2) {
-          out_p[c] = sat.fastatan(driven);
-        } else if (shape_ == 1) {
-          out_p[c] = sat.softclip(driven);
+      float32x4_t input_vec = vld1q_f32(in_p);
+      float32x4_t driver_vec = vmulq_f32(input_vec, mul_vec);
+      float32x4_t output_vec;
+      switch (shape_)
+      {
+      case 3:
+        if (clip_ == 1) {
+          output_vec = sat.vectorHardClip(sat.vectorPSoftClip(driver_vec));
         } else {
-          out_p[c] = sat.hardclip(driven);
+          output_vec = sat.vectorPSoftClip(driver_vec);
+        }
+        break;
+      case 2:
+        if (clip_ == 1) {
+          output_vec = sat.vectorHardClip(sat.vectorFastAtan(driver_vec));
+        } else {
+          output_vec = sat.vectorFastAtan(driver_vec);
+        }
+        break;
+      case 1:
+        output_vec = sat.vectorHardClip(driver_vec);
+        break;
+
+      default:
+        if (clip_ == 1) {
+          output_vec = sat.vectorHardClip(sat.vectorSoftClip(driver_vec));
+        } else {
+          output_vec = sat.vectorSoftClip(driver_vec);
         }
       }
+
+      vst1_f32(out_p, vget_low_f32(output_vec));
     }
   }
 
@@ -114,6 +152,8 @@ class MasterFX {
       case Shape:
         shape_ = value;
         break;
+      case Clip:
+        clip_ = value;
       default:
         break;
     }
@@ -128,7 +168,7 @@ class MasterFX {
 
     switch (index) {
       case Shape:
-        if (value < 3) {
+        if (value < 4) {
           return ShapeStr[value];
         } else {
           return nullptr;
@@ -161,10 +201,6 @@ class MasterFX {
 
   inline uint8_t getPresetIndex() const { return 0; }
 
-  /*===========================================================================*/
-  /* Static Members. */
-  /*===========================================================================*/
-
   static inline const char * getPresetName(uint8_t idx) {
     (void)idx;
     // Note: String memory must be accessible even after function returned.
@@ -174,28 +210,16 @@ class MasterFX {
   }
 
  private:
-  /*===========================================================================*/
-  /* Private Member Variables. */
-  /*===========================================================================*/
-
   std::atomic_uint_fast32_t flags_;
   int32_t p_[24];
-  maxiNonlinearity sat;
+  Saturator sat;
   float gain_;
   int shape_;
-
-  // maxiConvert util;
-
-  /*===========================================================================*/
-  /* Private Methods. */
-  /*===========================================================================*/
-
-  /*===========================================================================*/
-  /* Constants. */
-  /*===========================================================================*/
-  const char *ShapeStr[3] = {
+  int clip_;
+  const char *ShapeStr[4] = {
     "Soft",
     "Hard",
     "Atan",
+    "PSoft"
   };
 };

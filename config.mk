@@ -13,7 +13,7 @@ PROJECT_TYPE := masterfx
 CSRC = header.c
 
 # C++ sources
-CXXSRC = unit.cc ../Maximilian/src/maximilian.cpp
+CXXSRC = unit.cc
 
 # List ASM source files here
 ASMSRC = 
@@ -24,7 +24,7 @@ ASMXSRC =
 # Include Paths
 #
 
-UINCDIR  = ../Maximilian/src
+UINCDIR  =
 
 ##############################################################################
 # Library Paths
